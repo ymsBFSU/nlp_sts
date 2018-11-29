@@ -2,16 +2,21 @@ import nltk
 import re
 #from nltk import pos_tag
 from nltk.stem import WordNetLemmatizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from nltk.corpus import wordnet as wn
 from nltk.metrics import jaccard_distance
 from scipy.stats import pearsonr
 from nltk import pos_tag
 
 import numpy as np
+import pandas as pd
+from nltk.corpus import stopwords
 
+stop_words = stopwords.words('english')
 
 class STSModels:
-
+    def __init__(self, fit_model, per=None):
+        self.fit_model = fit_model
 
     def lemmatize(self, p, wnl):
         if p[1][0] in {'N','V'}:
@@ -43,7 +48,7 @@ class STSModels:
         return result
 
     """ more orthodox and robust implementation """
-    def dice_coefficient(self, a, b):
+    def dice_coefficient(self, a, b, n=2):
         """dice coefficient 2nt/na + nb."""
         if not len(a) or not len(b): return 0.0
         if len(a) == 1:  a=a+u'.'
@@ -51,10 +56,10 @@ class STSModels:
         
         a_bigram_list=[]
         for i in range(len(a)-1):
-          a_bigram_list.append(a[i:i+2])
+          a_bigram_list.append(a[i:i+n])
         b_bigram_list=[]
         for i in range(len(b)-1):
-          b_bigram_list.append(b[i:i+2])
+          b_bigram_list.append(b[i:i+n])
           
         a_bigrams = set(a_bigram_list)
         b_bigrams = set(b_bigram_list)
@@ -129,8 +134,7 @@ class STSModels:
         wnl = WordNetLemmatizer()
         lem_words1 = [self.lemmatize(pair, wnl) for pair in pairs1]
         lem_words2 = [self.lemmatize(pair, wnl) for pair in pairs2]
-        #jd = jaccard_distance(set(lem_words1), set(lem_words2))
-        #self.X.append(1-jd)
+        #sim = jaccard_distance(set(lem_words1), set(lem_words2))
         sim = self.dice_coefficient(' '.join(lem_words1), ' '.join(lem_words2))
         self.X.append(sim)
 
@@ -198,8 +202,31 @@ class STSModels:
             sim_lst.append(0)
         self.X.append(max(sim_lst))
 
+    def fit_grams(self, words1, words2):
+        a = ' '.join(words1)
+        b = ' '.join(words2)
 
-    def fit(self, filenames, model_selection, stage, per):
+        for n in range(4):
+            a_gram_list = []
+            for i in range(len(a)-1):
+              a_gram_list.append(a[i:i+n])
+            b_gram_list=[]
+            for i in range(len(b)-1):
+              b_gram_list.append(b[i:i+n])
+            sim = jaccard_distance(set(a_gram_list), set(b_gram_list))
+            self.X.append(sim)
+
+    def fit_bow(self, filenames, stage):
+        file_prefix = stage + '/STS'
+        input_prefix = file_prefix + '.input.'
+        gs_prefix = file_prefix + '.gs.'
+        input = pd.DataFrame()
+        for filename in filenames:
+            input = pd.concat([input, pd.read_csv(input_prefix+filename+'.txt',
+                                                  sep='\t', names=['sentence1', 'sentence2'])])
+        print(input.shape)
+
+    def fit(self, filenames, stage, sw=True):
         file_prefix = stage + '/STS'
         input_prefix = file_prefix + '.input.'
         gs_prefix = file_prefix + '.gs.'
@@ -214,27 +241,40 @@ class STSModels:
                 sent2 = sentClean(sent_tab[1].strip('\n').strip())
 
                 words1, words2 = [nltk.word_tokenize(s) for s in [sent1,sent2]]
-                
+                if not sw:
+                    words1 = [word for word in words1 if word not in stop_words]
+                    words2 = [word for word in words2 if word not in stop_words]
+
                 pairs1 = pos_tag(words1) #per.tag(words1) # pos_tag(words1)
                 pairs2 = pos_tag(words2) #per.tag(words2) # pos_tag(words2)
 
-                if 'lemmas' in model_selection:
+                if 'lemmas' in self.fit_model:
                     self.fit_lemmas(pairs1, pairs2)
 
-                if 'lesk' in model_selection:
+                if 'lesk' in self.fit_model:
                     self.fit_lesk(pairs1, pairs2, words1, words2)
 
-                if 'synsets' in model_selection:
+                if 'synsets' in self.fit_model:
                     self.fit_synsets(pairs1, pairs2, words1, words2)
+
+                if 'ngrams' in self.fit_model:
+                    self.fit_grams(words1, words2)
 
             for line in open(gs_prefix+filename+'.txt','r'):
                 self.y.append(int(line.split('\t')[0][0]))
-            
-        self.X = np.array(self.X).reshape(-1,1)
+
+        if 'bow' in self.fit_model:
+            self.fit_bow(filenames, stage)
+        if 'ngrams' in self.fit_model:
+            self.X = np.array(self.X).reshape(int(len(self.X)/n), n)
+        else:
+            self.X = np.array(self.X).reshape(-1,1)
         #self.y = np.array(self.y).reshape(-1,1)
 
+    def transform(self, filenames, stage):
+        self.fit(filenames, stage)
 
 def sentClean(sent):
-        new_sent = re.sub(r'[^\w]', ' ', sent) # |\b\w\b -> to take out single chars
+        new_sent = re.sub(r'[^A-Z a-z]', ' ', sent) # |\b\w\b -> to take out single chars
         new_sent = re.sub(r'[ ]+', ' ', new_sent.strip())
         return new_sent
