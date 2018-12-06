@@ -6,13 +6,22 @@ from nltk import pos_tag
 from nltk.corpus import wordnet as wn
 from nltk.metrics import jaccard_distance
 from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import AdaBoostRegressor
+from sklearn.svm import SVR
+from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
+
+
 from scipy.stats import pearsonr
+from nltk.tag.perceptron import PerceptronTagger
+from nltk import download
+from nltk.corpus import treebank
 
 
 import re
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
+download('treebank')
 
 stop_words = stopwords.words('english')
 pd.set_option('display.max_rows', 500)
@@ -22,7 +31,11 @@ wnl = WordNetLemmatizer()
 filenames_train = ['MSRpar', 'MSRvid', 'SMTeuroparl']
 filenames_test = ['MSRpar', 'MSRvid', 'SMTeuroparl',
                   'surprise.OnWN', 'surprise.SMTnews']
+train_data = treebank.tagged_sents()
 
+# Perceptron tagger
+per = PerceptronTagger(load='false')
+per.train(train_data)
 
 file_prefix = lambda stage: stage + '/STS'
 
@@ -107,7 +120,8 @@ def lemmatize(p):
 def lemmas(sents):
     new_sent = []
     for sent in sents:
-        pairs = pos_tag(sent)
+        #pairs = pos_tag(sent)
+        pairs = per.tag(sent)
         new_sent.append([lemmatize(pair) for pair in pairs])
     return new_sent
 
@@ -183,36 +197,40 @@ def lesk(sents):
         new_sent.append([myWSD(pair,sent) for pair in pairs])
     return new_sent
 
-def modelFeatures(df_sents):
-    Xlem = df_sents.apply(lemmas)
-    Xlesk = Xlem.apply(lesk)
+def modelFeatures(df_sents, files='', stage=''):
+    Xlesk = df_sents.apply(lesk)
 
-    Mdice_lem = Xlem.apply(lambda x: dice_coefficient(x['sentence1'], x['sentence2']), axis=1)
+    Mdice_lem = df_sents.apply(lambda x: dice_coefficient(x['sentence1'], x['sentence2']), axis=1)
 
-    Mjac_lem = Xlem.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
+    Mjac_lem = df_sents.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
 
     #Mlesk = Xlesk.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
     Mlesk = Xlesk.apply(lambda x: dice_coefficient(x['sentence1'], x['sentence2']), axis=1)
+
+    Xngram = df_sents.apply(lambda col: ngrams(col, 2))
+    Mngram2 = Xngram.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
+
+    Xngram = df_sents.apply(lambda col: ngrams(col, 4))
+    Mngram4 = Xngram.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
+
     removals = {
         'stop_words': True,
         'numbers': True
     }
-    Xngram = Xlem.apply(lambda col: ngrams(col, 2))
-    Mngram2 = Xngram.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
+    df_XtrainSW = getData(files, file_prefix(stage), **removals)
+    #labels_trn = df_Xtrain.iloc[:, -1]
+    df_XtrainSW = df_XtrainSW.drop(df_XtrainSW.columns[len(df_XtrainSW.columns) - 1], axis=1)
 
-    Xngram = Xlem.apply(lambda col: ngrams(col, 4))
-    Mngram4 = Xngram.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
-    '''
-    df_XtrainSW = getData(filenames_train, file_prefix('train'), **removals)
     Xlem = df_XtrainSW.apply(lemmas)
+
     Xngram = Xlem.apply(lambda col: ngrams(col, 1))
     Mngram1_sw = Xngram.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
-    Xngram = Xlem.apply(lambda col: ngrams(col, 2))
+
+    Xngram = Xlem.apply(lambda col: ngrams(col, 3))
     Mngram2_sw = Xngram.apply(lambda x: jaccard_distance(set(x['sentence1']), set(x['sentence2'])), axis=1)
     
     df = pd.concat([Mdice_lem, Mjac_lem, Mlesk, Mngram2, Mngram4, Mngram1_sw, Mngram2_sw], axis=1)
-    '''
-    df = pd.concat([Mdice_lem, Mjac_lem, Mlesk, Mngram2, Mngram4], axis=1)
+    #df = pd.concat([Mdice_lem, Mjac_lem, Mlesk, Mngram2, Mngram4], axis=1)
     return df
 
 #input_prefix = lambda stage:  file_prefix(stage) + '.input.'
@@ -240,13 +258,39 @@ Xtrn, Xval, ytrn, yval = train_test_split(
                                         test_size=0.4)
                                         #random_state=0)
 '''
+Xlem = df_Xtrain.apply(lemmas)
+Xlem_tst = df_Xtest.apply(lemmas)
 ##
 #print(Xlem.head())
 #Xngram = Xlem.apply(lambda col: ngrams(col, n))
 
-transformed_train = modelFeatures(df_Xtrain)
-reg = LinearRegression().fit(transformed_train, labels_trn)
+transformed_train = modelFeatures(Xlem, filenames_train, 'train')
+#reg = LinearRegression().fit(transformed_train, labels_trn)
+reg_model = AdaBoostRegressor().fit(transformed_train, labels_trn)
 
-transformed_test = modelFeatures(df_Xtest)
-pred = reg.predict(transformed_test)
-print(pearsonr(pred.T.tolist(), labels_tst.tolist())[0])
+transformed_test = modelFeatures(Xlem_tst, filenames_test, 'test')
+pred_model = reg_model.predict(transformed_test)
+print(pearsonr(pred_model.T.tolist(), labels_tst.tolist())[0])
+
+bow = CountVectorizer(lowercase=False,
+                      analyzer=lambda x: x)
+join_Xlem = Xlem['sentence1'] + Xlem['sentence2']
+bow_Xtrn = bow.fit_transform(join_Xlem)
+sents_tfidf = TfidfTransformer()
+tfidf_Xtrn = sents_tfidf.fit_transform(bow_Xtrn)
+
+join_Xlem_tst = Xlem_tst['sentence1'] + Xlem_tst['sentence2']
+bow_Xtst = bow.transform(join_Xlem_tst)
+tfidf_Xtst = sents_tfidf.transform(bow_Xtst)
+
+reg_bow = AdaBoostRegressor().fit(tfidf_Xtrn, labels_trn)
+pred_bow = reg_bow.predict(tfidf_Xtst)
+print(pearsonr(pred_bow.T.tolist(), labels_tst.tolist())[0])
+##
+pred_model_trn = reg_model.predict(transformed_train)
+pred_bow_trn = reg_bow.predict(tfidf_Xtrn)
+
+# ensemble
+reg_final = SVR().fit(np.concatenate([pred_model_trn.reshape(-1,1), pred_bow_trn.reshape(-1,1)], axis=1), labels_trn)
+pred_final = reg_final.predict(np.concatenate([pred_model.reshape(-1,1), pred_bow.reshape(-1,1)], axis=1))
+print(pearsonr(pred_final.T.tolist(), labels_tst.tolist())[0])
