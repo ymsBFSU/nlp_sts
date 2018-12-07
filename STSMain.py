@@ -6,9 +6,10 @@ from nltk import pos_tag
 from nltk.corpus import wordnet as wn
 from nltk.metrics import jaccard_distance
 from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import AdaBoostRegressor
+from sklearn.ensemble import AdaBoostRegressor, GradientBoostingRegressor
 from sklearn.svm import SVR
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
+from sklearn import model_selection
 
 
 from scipy.stats import pearsonr
@@ -233,6 +234,14 @@ def modelFeatures(df_sents, files='', stage=''):
     #df = pd.concat([Mdice_lem, Mjac_lem, Mlesk, Mngram2, Mngram4], axis=1)
     return df
 
+def fit_model2(X):
+    bow = CountVectorizer(lowercase=False,
+                          analyzer=lambda x: x)
+    join_X = X['sentence1'] + X['sentence2']
+    bow_Xtrn = bow.fit_transform(join_X)
+    sents_tfidf = TfidfTransformer()
+    tfidf_Xtrn = sents_tfidf.fit_transform(bow_Xtrn)
+    return bow, sents_tfidf, tfidf_Xtrn
 #input_prefix = lambda stage:  file_prefix(stage) + '.input.'
 #gs_prefix = lambda stage: file_prefix(stage) + '.gs.'
 
@@ -266,31 +275,38 @@ Xlem_tst = df_Xtest.apply(lemmas)
 
 transformed_train = modelFeatures(Xlem, filenames_train, 'train')
 #reg = LinearRegression().fit(transformed_train, labels_trn)
-reg_model = AdaBoostRegressor().fit(transformed_train, labels_trn)
+#reg_model = AdaBoostRegressor().fit(transformed_train, labels_trn)
+reg_model = AdaBoostRegressor()
+kfold = model_selection.KFold(n_splits=10)
+results_model1 = model_selection.cross_val_predict(reg_model, transformed_train, labels_trn, cv=kfold)
 
 transformed_test = modelFeatures(Xlem_tst, filenames_test, 'test')
-pred_model = reg_model.predict(transformed_test)
+pred_model = reg_model.fit(transformed_train, labels_trn).predict(transformed_test)
 print(pearsonr(pred_model.T.tolist(), labels_tst.tolist())[0])
 
-bow = CountVectorizer(lowercase=False,
-                      analyzer=lambda x: x)
-join_Xlem = Xlem['sentence1'] + Xlem['sentence2']
-bow_Xtrn = bow.fit_transform(join_Xlem)
-sents_tfidf = TfidfTransformer()
-tfidf_Xtrn = sents_tfidf.fit_transform(bow_Xtrn)
+#bow = CountVectorizer(lowercase=False,
+#                      analyzer=lambda x: x)
+#join_Xlem = Xlem['sentence1'] + Xlem['sentence2']
+#bow_Xtrn = bow.fit_transform(join_Xlem)
+#sents_tfidf = TfidfTransformer()
+#tfidf_Xtrn = sents_tfidf.fit_transform(bow_Xtrn)
+#reg_bow = AdaBoostRegressor().fit(tfidf_Xtrn, labels_trn)
 
+bow, sents_tfidf, tfidf_Xtrn = fit_model2(Xlem)
+reg_bow = GradientBoostingRegressor()#.fit(tfidf_Xtrn, labels_trn)
+
+results_model2 = model_selection.cross_val_predict(reg_bow, tfidf_Xtrn, labels_trn, cv=kfold)
 join_Xlem_tst = Xlem_tst['sentence1'] + Xlem_tst['sentence2']
 bow_Xtst = bow.transform(join_Xlem_tst)
 tfidf_Xtst = sents_tfidf.transform(bow_Xtst)
-
-reg_bow = AdaBoostRegressor().fit(tfidf_Xtrn, labels_trn)
-pred_bow = reg_bow.predict(tfidf_Xtst)
+pred_bow = reg_bow.fit(tfidf_Xtrn, labels_trn).predict(tfidf_Xtst)
 print(pearsonr(pred_bow.T.tolist(), labels_tst.tolist())[0])
 ##
-pred_model_trn = reg_model.predict(transformed_train)
-pred_bow_trn = reg_bow.predict(tfidf_Xtrn)
+#pred_model_trn = reg_model.predict(transformed_train)
+
+#pred_bow_trn = reg_bow.predict(tfidf_Xtrn)
 
 # ensemble
-reg_final = SVR().fit(np.concatenate([pred_model_trn.reshape(-1,1), pred_bow_trn.reshape(-1,1)], axis=1), labels_trn)
+reg_final = GradientBoostingRegressor().fit(np.concatenate([results_model1.reshape(-1,1), results_model2.reshape(-1,1)], axis=1), labels_trn)
 pred_final = reg_final.predict(np.concatenate([pred_model.reshape(-1,1), pred_bow.reshape(-1,1)], axis=1))
 print(pearsonr(pred_final.T.tolist(), labels_tst.tolist())[0])
