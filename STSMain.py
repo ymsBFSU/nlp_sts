@@ -16,7 +16,7 @@ from scipy.stats import pearsonr
 from nltk.tag.perceptron import PerceptronTagger
 from nltk import download
 from nltk.corpus import treebank
-
+from xgboost import XGBRegressor
 
 import re
 import pandas as pd
@@ -307,6 +307,6 @@ print(pearsonr(pred_bow.T.tolist(), labels_tst.tolist())[0])
 #pred_bow_trn = reg_bow.predict(tfidf_Xtrn)
 
 # ensemble
-reg_final = GradientBoostingRegressor().fit(np.concatenate([results_model1.reshape(-1,1), results_model2.reshape(-1,1)], axis=1), labels_trn)
+reg_final = XGBRegressor().fit(np.concatenate([results_model1.reshape(-1,1), results_model2.reshape(-1,1)], axis=1), labels_trn)
 pred_final = reg_final.predict(np.concatenate([pred_model.reshape(-1,1), pred_bow.reshape(-1,1)], axis=1))
 print(pearsonr(pred_final.T.tolist(), labels_tst.tolist())[0])
